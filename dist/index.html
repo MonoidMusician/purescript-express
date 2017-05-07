@@ -4,9 +4,25 @@
     <title>My Halogen App</title>
     <style>
       body {
-        font-family: sans-serif;
+        font-family: monospace;
         max-width: 800px;
         margin: auto;
+      }
+      input, textarea {
+          font: inherit !important;
+          border: 1px solid transparent;
+      }
+      input:focus, textarea:focus {
+          outline: 0;
+          border: 1px solid rebeccapurple;
+          border-radius: 2px;
+      }
+      input.name {
+          color: green;
+      }
+      input.type {
+          color: darkblue;
+          width: 40em;
       }
     </style>
   </head>
