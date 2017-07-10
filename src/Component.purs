@@ -3,22 +3,20 @@ module Component where
 import Prelude
 
 import Control.Monad.Aff (Aff)
-import Control.Monad.Eff (Eff)
 import Control.Monad.Except (runExcept)
 import DOM (DOM)
 import DOM.Event.KeyboardEvent (key)
 import DOM.Event.Types (focusEventToEvent, keyboardEventToEvent)
-import DOM.Util.TextCursor (TextCursor(..), appendr)
+import DOM.Util.TextCursor (TextCursor(..))
 import DOM.Util.TextCursor as TC
 import DOM.Util.TextCursor.Element as TC.El
 import Data.Array (filter, foldr, intercalate)
 import Data.Array as Array
 import Data.Char (toUpper)
 import Data.Either (Either(..))
-import Data.Lens (over, (.~), (^.))
+import Data.Lens ((.~), (^.))
 import Data.Lens.Suggestion (Lens', lens, suggest)
-import Data.Maybe (Maybe(..), maybe)
-import Data.Newtype (wrap)
+import Data.Maybe (Maybe(..))
 import Data.String (joinWith, singleton, uncons)
 import Data.String as Str
 import Data.String.Regex (match) as Re
@@ -49,20 +47,20 @@ type State =
   , isInstant :: Boolean
   }
 
-descriptionL :: Lens' State String
-descriptionL = lens (_.description) (\s d -> s { description = d })
+_description :: Lens' State String
+_description = lens (_.description) (\s d -> s { description = d })
 
-nameL :: Lens' State String
-nameL = lens (_.name) (\s n -> s { name = n })
+_name :: Lens' State String
+_name = lens (_.name) (\s n -> s { name = n })
 
-typeAnnotL :: Lens' State TextCursor
-typeAnnotL = lens (_.typeAnnot) (\s t -> s { typeAnnot = t })
+_typeAnnot :: Lens' State TextCursor
+_typeAnnot = lens (_.typeAnnot) (\s t -> s { typeAnnot = t })
 
-executeL :: Lens' State String
-executeL = lens (_.executeBody) (\s e -> s { executeBody = e })
+_execute :: Lens' State String
+_execute = lens (_.executeBody) (\s e -> s { executeBody = e })
 
-isInstantL :: Lens' State Boolean
-isInstantL = lens (_.isInstant) (\s i -> s { isInstant = i })
+_isInstant :: Lens' State Boolean
+_isInstant = lens (_.isInstant) (\s i -> s { isInstant = i })
 
 toName :: String -> String
 toName = select >>> words >>> exclude >>> mapHeadTail Str.toLower camel >>> joinWith ""
@@ -83,27 +81,36 @@ toName = select >>> words >>> exclude >>> mapHeadTail Str.toLower camel >>> join
             Just { head, tail } ->
                 (head # toUpper # singleton) <> tail
 
-suggestDescriptionL :: Lens' State String
-suggestDescriptionL = suggest descriptionL toName nameL
+_suggestDescription :: Lens' State String
+_suggestDescription = suggest _description toName _name
 
 descriptionComponent :: forall p. State -> Element p
-descriptionComponent = HL.Input.render suggestDescriptionL
+descriptionComponent =
+  HL.Input.render'
+    _suggestDescription
+    [class_ "documentation"]
 
+class_ :: forall a r. String -> HH.IProp ( "class" :: String | r ) a
 class_ = HP.class_ <<< HH.ClassName
+
+nospellcheck :: forall a r. Array
+  (HH.IProp
+    ( autocomplete :: HP.OnOff
+    , spellcheck :: Boolean
+    | r
+    ) a)
 nospellcheck = [HP.autocomplete false, HP.spellcheck false]
 
 nameComponent :: forall p. State -> Element p
-nameComponent = HL.Input.render' nameL $ [class_ "name"] <> nospellcheck
-
---typeComponent :: forall p. State -> Element p
---typeComponent = HL.Input.render' typeAnnotL $ [class_ "type"] <> nospellcheck
+nameComponent = HL.Input.render' _name $ [class_ "name"] <> nospellcheck
 
 executeComponent :: forall p. State -> Element p
-executeComponent = HL.TextArea.render executeL
+executeComponent = HL.TextArea.render _execute
 
 instantComponent :: forall p. State -> Element p
-instantComponent = HL.Checkbox.renderAsField "Instant command" isInstantL
+instantComponent = HL.Checkbox.renderAsField "Instant command" _isInstant
 
+autocomplete :: Array String
 autocomplete = ["Foldable", "Monoid"]
 
 component :: forall eff. H.Component HH.HTML Query Unit Void (Aff (dom :: DOM | eff))
@@ -118,7 +125,7 @@ component =
 
   initialState :: State
   initialState =
-    { description: "Fold"
+    { description: "Fold a data structure, accumulating values in some `Monoid`."
     , name: "fold"
     , typeAnnot: TC.single TC._before "forall f m. Foldable f => Monoid m => f m -> m"
     , executeBody: "foldMap id"
@@ -202,15 +209,15 @@ component =
             let updated = f value
             when (updated /= value)
               (TC.El.setTextCursor updated node)
-            pure (typeAnnotL .~ updated)
+            pure (_typeAnnot .~ updated)
       tcQuery e = queryF e id
-      tcElement = HH.input
+      tcElement = HH.input $
           [ HE.onInput (HE.input tcQuery)
           , HE.onKeyUp (HE.input doKey)
           , HE.onBlur (HE.input (focusEventToEvent >>> tcQuery))
-          , HP.value (TC.content (state ^. typeAnnotL))
-          , HP.classes [wrap "type"]
-          ]
+          , HP.value (TC.content (state ^. _typeAnnot))
+          , class_ "type"
+          ] <> nospellcheck
 
   eval :: Query ~> H.ComponentDSL State Query Void (Aff (dom :: DOM | eff))
   eval = HL.eval
