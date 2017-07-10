@@ -1,9 +1,20 @@
 module Component where
 
 import Prelude
+
+import Control.Monad.Aff (Aff)
+import DOM (DOM)
+import Data.Array (filter, foldr, intercalate)
 import Data.Array as Array
-import Data.Array as Array
+import Data.Char (toUpper)
+import Data.Lens.Suggestion (Lens', lens, suggest)
+import Data.Maybe (Maybe(..))
+import Data.String (joinWith, singleton, uncons)
 import Data.String as Str
+import Data.String.Regex (match) as Re
+import Data.String.Regex.Flags (noFlags) as Re
+import Data.String.Regex.Unsafe (unsafeRegex) as Re
+import Data.String.Utils (words)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -12,17 +23,7 @@ import Halogen.HTML.Lens.Checkbox as HL.Checkbox
 import Halogen.HTML.Lens.Input as HL.Input
 import Halogen.HTML.Lens.TextArea as HL.TextArea
 import Halogen.HTML.Properties as HP
-import Control.Monad.Aff (Aff)
-import DOM (DOM)
-import Data.Array (filter, foldr, intercalate)
-import Data.Char (toUpper)
-import Data.Lens.Suggestion (Lens', lens, suggest)
-import Data.Maybe (Maybe(..), fromMaybe)
-import Data.String (Pattern(..), joinWith, singleton, split, uncons)
-import Data.String.Regex (split, match) as Re
-import Data.String.Regex.Flags (noFlags, global) as Re
-import Data.String.Regex.Unsafe (unsafeRegex) as Re
-import Data.String.Utils (words)
+import Main.Grammar (parseType)
 
 type Query = HL.Query State
 
@@ -113,10 +114,10 @@ component =
     }
 
   render :: State -> H.ComponentHTML Query
-  render state@{ description, name } =
+  render state@{ description, name, typeAnnot } =
     HH.div_
       [ HH.h1_
-          [ HH.text "Create FRC Command" ]
+          [ HH.text "Create PureScript Program" ]
       , HH.text "-- | ", descriptionComponent state
       , HH.br_
       , nameComponent state, HH.text " :: ", typeComponent state
@@ -124,6 +125,7 @@ component =
       , nameComponent state, HH.text " = "
       , HH.br_, HH.text "\xa0\xa0\xa0\xa0"
       , executeComponent state
+      , HH.br_, HH.text $ show (parseType typeAnnot)
       ]
 
   eval :: Query ~> H.ComponentDSL State Query Void (Aff (dom :: DOM | eff))
