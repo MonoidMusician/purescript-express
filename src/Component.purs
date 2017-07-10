@@ -3,27 +3,20 @@ module Component where
 import Prelude
 
 import Control.Monad.Aff (Aff)
-import Control.Monad.Except (runExcept)
 import DOM (DOM)
-import DOM.Event.KeyboardEvent (key)
-import DOM.Event.Types (focusEventToEvent, keyboardEventToEvent)
-import DOM.Util.TextCursor (TextCursor(..))
 import DOM.Util.TextCursor as TC
-import DOM.Util.TextCursor.Element as TC.El
 import Data.Array (filter, foldr, intercalate)
 import Data.Array as Array
 import Data.Char (toUpper)
-import Data.Either (Either(..))
-import Data.Lens ((.~), (^.), view, re, non)
+import Data.Lens ((^.))
 import Data.Lens.Suggestion (Lens', lens, suggest)
 import Data.Maybe (Maybe(..))
 import Data.String (joinWith, singleton, uncons)
 import Data.String as Str
 import Data.String.Regex (match) as Re
-import Data.String.Regex (test)
 import Data.String.Regex.Flags (noFlags) as Re
 import Data.String.Regex.Unsafe (unsafeRegex) as Re
-import Data.String.Utils (endsWith, startsWith, words)
+import Data.String.Utils (words)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -31,9 +24,10 @@ import Halogen.HTML.Lens as HL
 import Halogen.HTML.Lens.Checkbox as HL.Checkbox
 import Halogen.HTML.Lens.Input as HL.Input
 import Halogen.HTML.Lens.TextArea as HL.TextArea
+import Halogen.HTML.Lens.Autocomplete as HL.Autocomplete
 import Halogen.HTML.Properties as HP
 import Main.Grammar (parseType)
-import Data.String.VerEx as Vex
+import DOM.Util.TextCursor (TextCursor)
 
 type Query = HL.Query State
 
@@ -110,8 +104,8 @@ executeComponent = HL.TextArea.render _execute
 instantComponent :: forall p. State -> Element p
 instantComponent = HL.Checkbox.renderAsField "Instant command" _isInstant
 
-autocomplete :: Array String
-autocomplete = ["Foldable", "Monoid"]
+completions :: Array String
+completions = ["Foldable", "Monoid"]
 
 component :: forall eff. H.Component HH.HTML Query Unit Void (Aff (dom :: DOM | eff))
 component =
@@ -146,97 +140,8 @@ component =
       , executeComponent state
       , HH.br_, HH.text $ show (parseType (TC.content typeAnnot))
       , HH.br_, HH.text $ show (typeAnnot)
-      , HH.br_, HH.text $ show (lastword $ typeAnnot ^. TC._before)
-      ]
-    where
-      doKey e =
-        queryF (keyboardEventToEvent e)
-          (onKey (key e))
-      onKey :: String -> TextCursor -> TextCursor
-      onKey k tc@(TextCursor { before, selected, after }) = case k of
-        -- add a period after forall
-        " " | "forall " <- before
-            , "" <- selected
-            , not (test (Re.unsafeRegex "^[\\w\\s]+\\." Re.noFlags) after)
-                -> TextCursor { before, selected, after: "." <> after }
-        -- place constraints written in a forall after the quantifier
-        "." | "" <- selected
-            , Just [_, Just b, Just c, Just v] <-
-                before # Re.match forallregex
-                  ->
-                    let
-                      after' = Str.dropWhile (eq '.' || eq ' ') after
-                      m = case Re.match contraintsregex after' of
-                        Just [Just m'] -> m'
-                        _ -> ""
-                      after'' = ". " <> m <> c <> v <> " => " <> Str.drop (Str.length m) after'
-                    in TextCursor { before: b <> v, selected, after: after'' }
-        -- deduplicate periods, passing them over
-        "." | endsWith "." before
-            , "" <- selected
-            , startsWith "." after
-                -> TextCursor { before, selected, after: Str.drop 1 after }
-        -- autocomplete a selected autocompletion
-        "Enter"
-            | Just w <- lastword before
-            , Just r <- Array.head (getrest w autocomplete)
-            , selected == r -- check that selection is a completion
-                -> TextCursor { before: before <> r, selected: "", after }
-        -- generate autocompletion when a regular character is typed
-        _   | Str.length k == 1 && k /= " " -- ordinary characters
-            , "" <- selected -- no selection
-            , noword after -- not right before a word
-            , Just w <- lastword before -- but right after a word which
-            , Just r <- Array.head (getrest w autocomplete) -- starts completion
-                -> TextCursor { before, selected: r, after }
-        _ -> tc
-      noword = not <<< Vex.test do
-        Vex.startOfLine
-        Vex.word
-      lastword = id <=< Array.head <=< Vex.match do
-        w <- Vex.capture Vex.word
-        Vex.endOfLine
-        pure ([w])
-      getrest w = Array.mapMaybe (Str.stripPrefix (Str.Pattern w) >=> (view $ re $ non ""))
-      forallregex = Vex.toRegex do
-        -- "^(.*forall.+)([A-Z]\\w* )([\\w\\s]+)\\.$"
-        let letters = "abcdefghijklmnopqrstuvwxyz"
-        Vex.startOfLine
-        b <- Vex.capture do
-          Vex.anything
-          Vex.find "forall"
-          Vex.anythingBut (Str.toUpper letters)
-        c <- Vex.capture do
-          Vex.upper
-          Vex.word
-          Vex.whitespace
-        v <- Vex.capture do
-          Vex.some do
-            Vex.anyOf (letters <> Str.toUpper letters <> "1234567890 ")
-        Vex.find "."
-        Vex.endOfLine
-      ops = ":!#$%&*+./<=>?@\\\\^|-~"
-      contraintsregex =
-        Re.unsafeRegex
-          ("(?:[\\w\\s]+\\s*=>(?=[^" <> ops <> "]|$)\\s*)*")
-          Re.noFlags
-      queryF e f = HL.UpdateState
-        case runExcept $ TC.El.readEventTarget e of
-          Left _ -> pure id
-          Right node -> do
-            value <- TC.El.textCursor node
-            let updated = f value
-            when (updated /= value)
-              (TC.El.setTextCursor updated node)
-            pure (_typeAnnot .~ updated)
-      tcQuery e = queryF e id
-      tcElement = HH.input $
-          [ HE.onInput (HE.input tcQuery)
-          , HE.onKeyUp (HE.input doKey)
-          , HE.onBlur (HE.input (focusEventToEvent >>> tcQuery))
-          , HP.value (TC.content (state ^. _typeAnnot))
-          , class_ "type"
-          ] <> nospellcheck
+      , HH.br_, HH.text $ show (HL.Autocomplete.lastword $ typeAnnot ^. TC._before)
+      ] where tcElement = HL.Autocomplete.render _typeAnnot completions state
 
   eval :: Query ~> H.ComponentDSL State Query Void (Aff (dom :: DOM | eff))
   eval = HL.eval
