@@ -3,18 +3,29 @@ module Component where
 import Prelude
 
 import Control.Monad.Aff (Aff)
+import Control.Monad.Eff (Eff)
+import Control.Monad.Except (runExcept)
 import DOM (DOM)
+import DOM.Event.KeyboardEvent (key)
+import DOM.Event.Types (focusEventToEvent, keyboardEventToEvent)
+import DOM.Util.TextCursor (TextCursor(..), appendr)
+import DOM.Util.TextCursor as TC
+import DOM.Util.TextCursor.Element as TC.El
 import Data.Array (filter, foldr, intercalate)
 import Data.Array as Array
 import Data.Char (toUpper)
+import Data.Either (Either(..))
+import Data.Lens (over, (.~), (^.))
 import Data.Lens.Suggestion (Lens', lens, suggest)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
+import Data.Newtype (wrap)
 import Data.String (joinWith, singleton, uncons)
 import Data.String as Str
 import Data.String.Regex (match) as Re
+import Data.String.Regex (test)
 import Data.String.Regex.Flags (noFlags) as Re
 import Data.String.Regex.Unsafe (unsafeRegex) as Re
-import Data.String.Utils (words)
+import Data.String.Utils (endsWith, startsWith, words)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -32,7 +43,7 @@ type Element p = H.HTML p Query
 type State =
   { description :: String
   , name :: String
-  , typeAnnot :: String
+  , typeAnnot :: TextCursor
   , executeBody :: String
   , isInstant :: Boolean
   }
@@ -43,7 +54,7 @@ descriptionL = lens (_.description) (\s d -> s { description = d })
 nameL :: Lens' State String
 nameL = lens (_.name) (\s n -> s { name = n })
 
-typeAnnotL :: Lens' State String
+typeAnnotL :: Lens' State TextCursor
 typeAnnotL = lens (_.typeAnnot) (\s t -> s { typeAnnot = t })
 
 executeL :: Lens' State String
@@ -83,8 +94,8 @@ nospellcheck = [HP.autocomplete false, HP.spellcheck false]
 nameComponent :: forall p. State -> Element p
 nameComponent = HL.Input.render' nameL $ [class_ "name"] <> nospellcheck
 
-typeComponent :: forall p. State -> Element p
-typeComponent = HL.Input.render' typeAnnotL $ [class_ "type"] <> nospellcheck
+--typeComponent :: forall p. State -> Element p
+--typeComponent = HL.Input.render' typeAnnotL $ [class_ "type"] <> nospellcheck
 
 executeComponent :: forall p. State -> Element p
 executeComponent = HL.TextArea.render executeL
@@ -108,7 +119,7 @@ component =
   initialState =
     { description: "Fold"
     , name: "fold"
-    , typeAnnot: "forall f m. Foldable f => Monoid m => f m -> m"
+    , typeAnnot: TC.single TC._before "forall f m. Foldable f => Monoid m => f m -> m"
     , executeBody: "foldl (<>) mempty"
     , isInstant: false
     }
@@ -120,13 +131,58 @@ component =
           [ HH.text "Create PureScript Program" ]
       , HH.text "-- | ", descriptionComponent state
       , HH.br_
-      , nameComponent state, HH.text " :: ", typeComponent state
+      , nameComponent state, HH.text " :: ", tcElement
       , HH.br_
       , nameComponent state, HH.text " = "
       , HH.br_, HH.text "\xa0\xa0\xa0\xa0"
       , executeComponent state
-      , HH.br_, HH.text $ show (parseType typeAnnot)
+      , HH.br_, HH.text $ show (parseType (TC.content typeAnnot))
       ]
+    where
+      doKey e =
+        queryF (keyboardEventToEvent e)
+          (onKey (key e))
+      onKey :: String -> TextCursor -> TextCursor
+      onKey = case _ of
+        " " -> case _ of
+          tc@(TextCursor { before, selected, after })
+            | "forall " <- before
+            , "" <- selected
+            , not (test (Re.unsafeRegex "^[\\w\\s]+\\." Re.noFlags) after)
+                -> TextCursor { before, selected, after: "." <> after }
+          tc -> tc
+        "." -> case _ of
+          tc@(TextCursor { before, selected, after })
+            | "" <- selected
+            , Just [_, Just b, Just c, Just v] <-
+                Re.match (Re.unsafeRegex "^(.*forall.+)([A-Z]\\w* )([\\w\\s]+)\\.$" Re.noFlags) before
+                  ->
+                    let after' = ". " <> c <> v <> " => " <> Str.dropWhile (eq '.' || eq ' ') after
+                    in TextCursor { before: b <> v, selected, after: after' }
+          tc@(TextCursor { before, selected, after })
+            | endsWith "." before
+            , "" <- selected
+            , startsWith "." after
+                -> TextCursor { before, selected, after: Str.drop 1 after }
+          tc -> tc
+        _ -> id
+      queryF e f = HL.UpdateState
+        case runExcept $ TC.El.readEventTarget e of
+          Left _ -> pure id
+          Right node -> do
+            value <- TC.El.textCursor node
+            let updated = f value
+            when (updated /= value)
+              (TC.El.setTextCursor updated node)
+            pure (typeAnnotL .~ updated)
+      tcQuery e = queryF e id
+      tcElement = HH.input
+          [ HE.onInput (HE.input tcQuery)
+          , HE.onKeyUp (HE.input doKey)
+          , HE.onBlur (HE.input (focusEventToEvent >>> tcQuery))
+          , HP.value (TC.content (state ^. typeAnnotL))
+          , HP.classes [wrap "type"]
+          ]
 
   eval :: Query ~> H.ComponentDSL State Query Void (Aff (dom :: DOM | eff))
   eval = HL.eval
