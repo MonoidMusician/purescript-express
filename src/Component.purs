@@ -14,7 +14,7 @@ import Data.Array (filter, foldr, intercalate)
 import Data.Array as Array
 import Data.Char (toUpper)
 import Data.Either (Either(..))
-import Data.Lens ((.~), (^.))
+import Data.Lens ((.~), (^.), view, re, non)
 import Data.Lens.Suggestion (Lens', lens, suggest)
 import Data.Maybe (Maybe(..))
 import Data.String (joinWith, singleton, uncons)
@@ -145,40 +145,59 @@ component =
       , HH.br_, HH.text "\xa0\xa0\xa0\xa0"
       , executeComponent state
       , HH.br_, HH.text $ show (parseType (TC.content typeAnnot))
+      , HH.br_, HH.text $ show (typeAnnot)
+      , HH.br_, HH.text $ show (lastword $ typeAnnot ^. TC._before)
       ]
     where
       doKey e =
         queryF (keyboardEventToEvent e)
           (onKey (key e))
       onKey :: String -> TextCursor -> TextCursor
-      onKey = case _ of
-        " " -> case _ of
-          tc@(TextCursor { before, selected, after })
-            | "forall " <- before
+      onKey k tc@(TextCursor { before, selected, after }) = case k of
+        -- add a period after forall
+        " " | "forall " <- before
             , "" <- selected
             , not (test (Re.unsafeRegex "^[\\w\\s]+\\." Re.noFlags) after)
                 -> TextCursor { before, selected, after: "." <> after }
-          tc -> tc
-        "." -> case _ of
-          tc@(TextCursor { before, selected, after })
-            | "" <- selected
+        -- place constraints written in a forall after the quantifier
+        "." | "" <- selected
             , Just [_, Just b, Just c, Just v] <-
                 before # Re.match forallregex
                   ->
                     let
                       after' = Str.dropWhile (eq '.' || eq ' ') after
                       m = case Re.match contraintsregex after' of
-                        Just [Just m] -> m
+                        Just [Just m'] -> m'
                         _ -> ""
                       after'' = ". " <> m <> c <> v <> " => " <> Str.drop (Str.length m) after'
                     in TextCursor { before: b <> v, selected, after: after'' }
-          tc@(TextCursor { before, selected, after })
-            | endsWith "." before
+        -- deduplicate periods, passing them over
+        "." | endsWith "." before
             , "" <- selected
             , startsWith "." after
                 -> TextCursor { before, selected, after: Str.drop 1 after }
-          tc -> tc
-        _ -> id
+        -- autocomplete a selected autocompletion
+        "Enter"
+            | Just w <- lastword before
+            , Just r <- Array.head (getrest w autocomplete)
+            , selected == r -- check that selection is a completion
+                -> TextCursor { before: before <> r, selected: "", after }
+        -- generate autocompletion when a regular character is typed
+        _   | Str.length k == 1 && k /= " " -- ordinary characters
+            , "" <- selected -- no selection
+            , noword after -- not right before a word
+            , Just w <- lastword before -- but right after a word which
+            , Just r <- Array.head (getrest w autocomplete) -- starts completion
+                -> TextCursor { before, selected: r, after }
+        _ -> tc
+      noword = not <<< Vex.test do
+        Vex.startOfLine
+        Vex.word
+      lastword = id <=< Array.head <=< Vex.match do
+        w <- Vex.capture Vex.word
+        Vex.endOfLine
+        pure ([w])
+      getrest w = Array.mapMaybe (Str.stripPrefix (Str.Pattern w) >=> (view $ re $ non ""))
       forallregex = Vex.toRegex do
         -- "^(.*forall.+)([A-Z]\\w* )([\\w\\s]+)\\.$"
         let letters = "abcdefghijklmnopqrstuvwxyz"
@@ -189,7 +208,7 @@ component =
           Vex.anythingBut (Str.toUpper letters)
         c <- Vex.capture do
           Vex.upper
-          Vex.many Vex.word
+          Vex.word
           Vex.whitespace
         v <- Vex.capture do
           Vex.some do
