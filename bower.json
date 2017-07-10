@@ -12,6 +12,7 @@
     "purescript-console": "^3.0.0",
     "purescript-halogen": "^2.0.0",
     "purescript-stringutils": "^0.0.6",
-    "purescript-textcursor": "../purescript-textcursor/"
+    "purescript-textcursor": "../purescript-textcursor/",
+    "purescript-verbal-expressions": "^3.0.0"
   }
 }

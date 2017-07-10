@@ -35,6 +35,7 @@ import Halogen.HTML.Lens.Input as HL.Input
 import Halogen.HTML.Lens.TextArea as HL.TextArea
 import Halogen.HTML.Properties as HP
 import Main.Grammar (parseType)
+import Data.String.VerEx as Vex
 
 type Query = HL.Query State
 
@@ -120,7 +121,7 @@ component =
     { description: "Fold"
     , name: "fold"
     , typeAnnot: TC.single TC._before "forall f m. Foldable f => Monoid m => f m -> m"
-    , executeBody: "foldl (<>) mempty"
+    , executeBody: "foldMap id"
     , isInstant: false
     }
 
@@ -155,10 +156,15 @@ component =
           tc@(TextCursor { before, selected, after })
             | "" <- selected
             , Just [_, Just b, Just c, Just v] <-
-                Re.match (Re.unsafeRegex "^(.*forall.+)([A-Z]\\w* )([\\w\\s]+)\\.$" Re.noFlags) before
+                before # Re.match forallregex
                   ->
-                    let after' = ". " <> c <> v <> " => " <> Str.dropWhile (eq '.' || eq ' ') after
-                    in TextCursor { before: b <> v, selected, after: after' }
+                    let
+                      after' = Str.dropWhile (eq '.' || eq ' ') after
+                      m = case Re.match contraintsregex after' of
+                        Just [Just m] -> m
+                        _ -> ""
+                      after'' = ". " <> m <> c <> v <> " => " <> Str.drop (Str.length m) after'
+                    in TextCursor { before: b <> v, selected, after: after'' }
           tc@(TextCursor { before, selected, after })
             | endsWith "." before
             , "" <- selected
@@ -166,6 +172,28 @@ component =
                 -> TextCursor { before, selected, after: Str.drop 1 after }
           tc -> tc
         _ -> id
+      forallregex = Vex.toRegex do
+        -- "^(.*forall.+)([A-Z]\\w* )([\\w\\s]+)\\.$"
+        let letters = "abcdefghijklmnopqrstuvwxyz"
+        Vex.startOfLine
+        b <- Vex.capture do
+          Vex.anything
+          Vex.find "forall"
+          Vex.anythingBut (Str.toUpper letters)
+        c <- Vex.capture do
+          Vex.upper
+          Vex.many Vex.word
+          Vex.whitespace
+        v <- Vex.capture do
+          Vex.some do
+            Vex.anyOf (letters <> Str.toUpper letters <> "1234567890 ")
+        Vex.find "."
+        Vex.endOfLine
+      ops = ":!#$%&*+./<=>?@\\\\^|-~"
+      contraintsregex =
+        Re.unsafeRegex
+          ("(?:[\\w\\s]+\\s*=>(?=[^" <> ops <> "]|$)\\s*)*")
+          Re.noFlags
       queryF e f = HL.UpdateState
         case runExcept $ TC.El.readEventTarget e of
           Left _ -> pure id
