@@ -105,7 +105,7 @@ instantComponent :: forall p. State -> Element p
 instantComponent = HL.Checkbox.renderAsField "Instant command" _isInstant
 
 completions :: Array String
-completions = ["Foldable", "Monoid"]
+completions = ["Foldable", "Functor", "Monad", "Monoid"]
 
 component :: forall eff. H.Component HH.HTML Query Unit Void (Aff (dom :: DOM | eff))
 component =

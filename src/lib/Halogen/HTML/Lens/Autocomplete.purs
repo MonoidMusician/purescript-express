@@ -3,6 +3,7 @@ module Halogen.HTML.Lens.Autocomplete where
 import Prelude
 
 import Control.Monad.Except (runExcept)
+import DOM.Event.Event (preventDefault)
 import DOM.Event.KeyboardEvent (key)
 import DOM.Event.Types (focusEventToEvent, keyboardEventToEvent, mouseEventToEvent)
 import DOM.Util.TextCursor (TextCursor(..))
@@ -11,7 +12,7 @@ import DOM.Util.TextCursor.Element as TC.El
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Lens (Lens', non, re, view, (.~), (^.))
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.Newtype (wrap)
 import Data.String as Str
 import Data.String.Regex (Regex)
@@ -19,10 +20,7 @@ import Data.String.Regex (match, test, source) as Re
 import Data.String.Regex.Flags (noFlags) as Re
 import Data.String.Regex.Unsafe (unsafeRegex) as Re
 import Data.String.Utils (startsWith, endsWith)
-import Data.String.VerEx
-  ( anyOf, anythingBut, capture, endOfLine, find, match, some
-  , startOfLine, test, toRegex, upper, whitespace, word
-  )
+import Data.String.VerEx (anyOf, anythingBut, capture, endOfLine, find, match, some, startOfLine, test, toRegex, upper, whitespace, word)
 import Data.String.VerEx as VerEx
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -37,17 +35,17 @@ nospellcheck :: forall a r. Array
     ) a)
 nospellcheck = [HP.autocomplete false, HP.spellcheck false]
 
-onKey :: Array String -> String -> TextCursor -> TextCursor
+onKey :: Array String -> String -> TextCursor -> Maybe TextCursor
 onKey completions k tc@(TextCursor { before, selected, after }) = case k of
   -- add a period after forall
   " " | "forall " == before || "∀ " == before
       , "" <- selected
       , not (Re.test (Re.unsafeRegex "^[\\w\\s]*\\." Re.noFlags) after)
-          -> TextCursor { before, selected, after: "." <> after }
+          -> Just $ TextCursor { before, selected, after: "." <> after }
   -- expand "f." into a forall symbol followed by a period after the cursor
   "." | "f." <- before
       , "" <- selected
-          -> TextCursor { before: "∀", selected, after: ". " <> after }
+          -> Just $ TextCursor { before: "∀", selected, after: ". " <> after }
   -- place constraints written in a forall after the quantifier
   "." | "" <- selected
       , Just [_, Just b, Just c, Just v] <-
@@ -61,26 +59,40 @@ onKey completions k tc@(TextCursor { before, selected, after }) = case k of
                 after'' =
                   ". " <> m <> c <> v <> " => " <>
                   Str.drop (Str.length m) after'
-              in TextCursor { before: b <> v, selected, after: after'' }
+              in Just $ TextCursor { before: b <> v, selected, after: after'' }
   -- deduplicate periods, passing them over
   "." | endsWith "." before
       , "" <- selected
       , startsWith "." after
-          -> TextCursor { before, selected, after: Str.drop 1 after }
+          -> Just $ TextCursor { before, selected, after: Str.drop 1 after }
   -- autocomplete a selected autocompletion
   "Enter"
       | Just w <- lastword before
-      , Just r <- Array.head (getrest w completions)
-      , selected == r -- check that selection is a completion
-          -> TextCursor { before: before <> r, selected: "", after }
+        -- check that selection is a completion
+      , selected `Array.elem` (getrest w completions)
+          -> Just $ TextCursor { before: before <> selected, selected: "", after }
   -- generate autocompletion when a regular character is typed
   _   | Str.length k == 1 && k /= " " -- ordinary characters
       , "" <- selected -- no selection
       , noword after -- not right before a word
       , Just w <- lastword before -- but right after a word which
       , Just r <- Array.head (getrest w completions) -- starts completion
-          -> TextCursor { before, selected: r, after }
-  _ -> tc
+          -> Just $ TextCursor { before, selected: r, after }
+  _ -> Nothing
+
+beforeKey :: Array String -> String -> TextCursor -> Maybe TextCursor
+beforeKey completions k tc@(TextCursor { before, selected, after }) = case k of
+  "ArrowUp"
+    | noword after
+    , Just w <- lastword before
+    , Just c <- nextWrapped selected $ getrest w completions
+        -> Just $ TextCursor { before, selected: c, after: after }
+  "ArrowDown"
+    | noword after
+    , Just w <- lastword before
+    , Just c <- nextWrapped selected $ Array.reverse $ getrest w completions
+        -> Just $ TextCursor { before, selected: c, after: after }
+  _ -> Nothing
 
 noword :: String -> Boolean
 noword = not <<< test do
@@ -97,6 +109,16 @@ lastword = id <=< Array.head <=< match do
 getrest :: String -> Array String -> Array String
 getrest w = Array.mapMaybe (Str.stripPrefix (Str.Pattern w) >=> wo)
   where wo = view (re (non "")) -- Just "" -> Nothing
+
+nextWrapped :: String -> Array String -> Maybe String
+nextWrapped w completions = do
+  i <- completions # Array.elemIndex w
+  let
+    j =
+      if i > 0
+        then i-1
+        else Array.length completions - 1
+  completions Array.!! j
 
 forallregex :: Regex
 forallregex = toRegex do
@@ -131,24 +153,30 @@ render ::
   Array String -> s ->
   HH.HTML r (HL.Query s Unit)
 render lens completions state = HH.input $
-    [ HE.onInput (HE.input $ tcQuery)
-    , HE.onKeyUp (HE.input $ doKey)
+    [ HE.onInput (HE.input tcQuery)
+    , HE.onKeyUp (HE.input doKey)
     , HE.onBlur (HE.input $ focusEventToEvent >>> tcQuery)
     , HE.onClick (HE.input $ mouseEventToEvent >>> tcQuery)
+    , HE.onKeyDown (HE.input doKeyDown)
     , HP.value (TC.content (state ^. lens))
     , HP.class_ (wrap "type")
     --, HP.attr (HH.AttrName "data") (Re.source forallregex)
     ] <> nospellcheck
     where
-      queryF e f = HL.UpdateState
+      queryF prevent e f = HL.UpdateState
         case runExcept $ TC.El.readEventTarget e of
           Left _ -> pure id
           Right node -> do
             value <- TC.El.textCursor node
-            let updated = f value
-            when (updated /= value)
-              (TC.El.setTextCursor updated node)
-            pure (lens .~ updated)
-      tcQuery e = queryF e id
+            let
+              updated = f value
+              updated' = fromMaybe value updated
+            when (prevent && isJust updated) $ preventDefault e
+            when (updated' /= value) do
+              TC.El.setTextCursor updated' node
+            pure (lens .~ updated')
+      tcQuery e = queryF false e (const Nothing)
       doKey e =
-        queryF (keyboardEventToEvent e) $ onKey completions (key e)
+        queryF false (keyboardEventToEvent e) $ onKey completions (key e)
+      doKeyDown e =
+        queryF true (keyboardEventToEvent e) $ beforeKey completions (key e)
