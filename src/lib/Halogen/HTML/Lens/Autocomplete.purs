@@ -16,12 +16,11 @@ import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.Newtype (wrap)
 import Data.String as Str
 import Data.String.Regex (Regex)
-import Data.String.Regex (match, test, source) as Re
+import Data.String.Regex (match, test) as Re
 import Data.String.Regex.Flags (noFlags) as Re
 import Data.String.Regex.Unsafe (unsafeRegex) as Re
 import Data.String.Utils (startsWith, endsWith)
 import Data.String.VerEx (anyOf, anythingBut, capture, endOfLine, find, match, some, startOfLine, test, toRegex, upper, whitespace, word)
-import Data.String.VerEx as VerEx
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Lens as HL
@@ -36,16 +35,16 @@ nospellcheck :: forall a r. Array
 nospellcheck = [HP.autocomplete false, HP.spellcheck false]
 
 onKey :: Array String -> String -> TextCursor -> Maybe TextCursor
-onKey completions k tc@(TextCursor { before, selected, after }) = case k of
+onKey completions k tc@(TextCursor { before, selected, after, direction }) = case k of
   -- add a period after forall
   " " | "forall " == before || "∀ " == before
       , "" <- selected
       , not (Re.test (Re.unsafeRegex "^[\\w\\s]*\\." Re.noFlags) after)
-          -> Just $ TextCursor { before, selected, after: "." <> after }
-  -- expand "f." into a forall symbol followed by a period after the cursor
+          -> Just $ TextCursor { before, selected, after: "." <> after, direction }
+  -- expand "f." into a forall followed by a period after the cursor
   "." | "f." <- before
       , "" <- selected
-          -> Just $ TextCursor { before: "∀", selected, after: ". " <> after }
+          -> Just $ TextCursor { before: "forall", selected, after: ". " <> after, direction }
   -- place constraints written in a forall after the quantifier
   "." | "" <- selected
       , Just [_, Just b, Just c, Just v] <-
@@ -59,39 +58,39 @@ onKey completions k tc@(TextCursor { before, selected, after }) = case k of
                 after'' =
                   ". " <> m <> c <> v <> " => " <>
                   Str.drop (Str.length m) after'
-              in Just $ TextCursor { before: b <> v, selected, after: after'' }
+              in Just $ TextCursor { before: b <> v, selected, after: after'', direction }
   -- deduplicate periods, passing them over
   "." | endsWith "." before
       , "" <- selected
       , startsWith "." after
-          -> Just $ TextCursor { before, selected, after: Str.drop 1 after }
+          -> Just $ TextCursor { before, selected, after: Str.drop 1 after, direction }
   -- autocomplete a selected autocompletion
   "Enter"
       | Just w <- lastword before
         -- check that selection is a completion
       , selected `Array.elem` (getrest w completions)
-          -> Just $ TextCursor { before: before <> selected, selected: "", after }
+          -> Just $ TextCursor { before: before <> selected, selected: "", after, direction }
   -- generate autocompletion when a regular character is typed
   _   | Str.length k == 1 && k /= " " -- ordinary characters
       , "" <- selected -- no selection
       , noword after -- not right before a word
       , Just w <- lastword before -- but right after a word which
       , Just r <- Array.head (getrest w completions) -- starts completion
-          -> Just $ TextCursor { before, selected: r, after }
+          -> Just $ TextCursor { before, selected: r, after, direction }
   _ -> Nothing
 
 beforeKey :: Array String -> String -> TextCursor -> Maybe TextCursor
-beforeKey completions k tc@(TextCursor { before, selected, after }) = case k of
+beforeKey completions k tc@(TextCursor { before, selected, after, direction }) = case k of
   "ArrowUp"
     | noword after
     , Just w <- lastword before
     , Just c <- nextWrapped selected $ getrest w completions
-        -> Just $ TextCursor { before, selected: c, after: after }
+        -> Just $ TextCursor { before, selected: c, after: after, direction }
   "ArrowDown"
     | noword after
     , Just w <- lastword before
     , Just c <- nextWrapped selected $ Array.reverse $ getrest w completions
-        -> Just $ TextCursor { before, selected: c, after: after }
+        -> Just $ TextCursor { before, selected: c, after: after, direction }
   _ -> Nothing
 
 noword :: String -> Boolean
@@ -126,7 +125,7 @@ forallregex = toRegex do
   let letters = "abcdefghijklmnopqrstuvwxyz"
   startOfLine
   b <- capture do
-    VerEx.alt (find "∀") (find "forall")
+    find "forall" -- VerEx.alt (find "∀") (find "forall")
     anythingBut (Str.toUpper letters)
   c <- capture do
     upper
